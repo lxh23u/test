@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>どうぶつの森風ミニゲーム</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #7bc04b; /* 草原の色 */
+            font-family: 'Hiragino Rounded Gothic Pro', 'ヒラギノ丸ゴ Pro W4', 'メイリオ', Meiryo, sans-serif;
+            touch-action: none; /* スマホでのスワイプスクロール防止 */
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* UI（所持金などの表示） */
+        #ui-layer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            pointer-events: none;
+        }
+
+        .ui-box {
+            background-color: rgba(255, 255, 255, 0.9);
+            border: 4px solid #e0d0a0;
+            border-radius: 16px;
+            padding: 10px 20px;
+            margin-bottom: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            color: #5a4a32;
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        #instructions {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #333;
+            pointer-events: none;
+        }
+
+        /* スマホ向け操作ボタン */
+        #mobile-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            pointer-events: none; /* ボタン自体はpointer-events:autoにする */
+        }
+
+        .d-pad {
+            display: grid;
+            grid-template-columns: 60px 60px 60px;
+            grid-template-rows: 60px 60px 60px;
+            gap: 5px;
+            pointer-events: auto;
+        }
+
+        .btn {
+            background-color: rgba(255, 255, 255, 0.7);
+            border: 2px solid #aaa;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            user-select: none;
+            touch-action: manipulation;
+            cursor: pointer;
+        }
+        
+        .btn:active {
+            background-color: rgba(200, 200, 200, 0.9);
+        }
+
+        #btn-up { grid-column: 2; grid-row: 1; }
+        #btn-left { grid-column: 1; grid-row: 2; }
+        #btn-right { grid-column: 3; grid-row: 2; }
+        #btn-down { grid-column: 2; grid-row: 3; }
+
+        .action-btn-container {
+            pointer-events: auto;
+        }
+
+        #btn-action {
+            width: 80px;
+            height: 80px;
+            background-color: rgba(255, 150, 50, 0.8);
+            border: 4px solid #d07020;
+            color: white;
+            font-weight: bold;
+            font-size: 16px;
+            border-radius: 50%;
+        }
+        #btn-action:active {
+            background-color: rgba(200, 100, 20, 0.9);
+        }
+
+        /* 画面が広い場合はスマホボタンを隠す */
+        @media (min-width: 768px) {
+            #mobile-controls {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div class="ui-box">
+            💰 ベル: <span id="bells-display">0</span>
+        </div>
+        <div class="ui-box">
+            🎒 もちもの (リンゴ): <span id="inventory-display">0</span> / 10
+        </div>
+    </div>
+
+    <div id="instructions">
+        【あそびかた】<br>
+        移動: 矢印キー または WASD<br>
+        アクション: スペースキー<br>
+        🌲 木のそばでアクション -> リンゴが落ちる<br>
+        🍎 リンゴのそばでアクション -> 拾う<br>
+        🏠 お店のそばでアクション -> 売る
+    </div>
+
+    <div id="mobile-controls">
+        <div class="d-pad">
+            <div class="btn" id="btn-up">⬆️</div>
+            <div class="btn" id="btn-left">⬅️</div>
+            <div class="btn" id="btn-right">➡️</div>
+            <div class="btn" id="btn-down">⬇️</div>
+        </div>
+        <div class="action-btn-container">
+            <button class="btn" id="btn-action">アクション</button>
+        </div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // UI要素
+    const bellsDisplay = document.getElementById('bells-display');
+    const inventoryDisplay = document.getElementById('inventory-display');
+
+    // 画面サイズのリサイズ対応
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // --- ゲームのステータス ---
+    let bells = 0;
+    let inventory = 0;
+    const MAX_INVENTORY = 10;
+
+    // --- キー入力状態 ---
+    const keys = {
+        ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false,
+        w: false, s: false, a: false, d: false,
+        Space: false
+    };
+
+    // スマホ操作用フラグ
+    const touchInput = { up: false, down: false, left: false, right: false };
+
+    // --- エンティティ（オブジェクト）の定義 ---
+
+    // プレイヤー
+    const player = {
+        x: canvas.width / 2,
+        y: canvas.height / 2,
+        speed: 4,
+        size: 40,
+        emoji: '🧑'
+    };
+
+    // お店（タヌキのお店風）
+    const shop = {
+        x: canvas.width / 2,
+        y: 100,
+        size: 100,
+        emoji: '🏪'
+    };
+
+    // 木の配列
+    const trees = [];
+    const numTrees = 15;
+
+    // 落ちているアイテムの配列
+    const droppedItems = [];
+
+    // メッセージエフェクト配列
+    const floatingTexts = [];
+
+    // 初期化：木をランダムに配置
+    function initMap() {
+        for (let i = 0; i < numTrees; i++) {
+            let tx, ty;
+            let validPosition = false;
+            // プレイヤー初期位置やお店に被らないように配置
+            while (!validPosition) {
+                tx = Math.random() * (canvas.width - 100) + 50;
+                ty = Math.random() * (canvas.height - 150) + 150; // お店より下に配置
+
+                const distToPlayer = Math.hypot(tx - player.x, ty - player.y);
+                const distToShop = Math.hypot(tx - shop.x, ty - shop.y);
+
+                if (distToPlayer > 100 && distToShop > 150) {
+                    validPosition = true;
+                }
+            }
+
+            trees.push({
+                x: tx,
+                y: ty,
+                size: 70,
+                hasFruit: Math.random() > 0.3, // 70%の確率で最初からフルーツがなっている
+                fruitRegenTimer: 0
+            });
+        }
+    }
+
+    // --- 入力イベント ---
+
+    window.addEventListener('keydown', (e) => {
+        if (keys.hasOwnProperty(e.key) || e.code === 'Space') {
+            if(e.code === 'Space') {
+                if(!keys.Space) handleAction(); // 押しっぱなし防止
+                keys.Space = true;
+            } else {
+                keys[e.key] = true;
+            }
+        }
+    });
+
+    window.addEventListener('keyup', (e) => {
+        if (keys.hasOwnProperty(e.key) || e.code === 'Space') {
+            if(e.code === 'Space') keys.Space = false;
+            else keys[e.key] = false;
+        }
+    });
+
+    // スマホボタンイベント
+    const bindTouch = (id, direction) => {
+        const btn = document.getElementById(id);
+        btn.addEventListener('touchstart', (e) => { e.preventDefault(); touchInput[direction] = true; });
+        btn.addEventListener('touchend', (e) => { e.preventDefault(); touchInput[direction] = false; });
+        btn.addEventListener('mousedown', (e) => { e.preventDefault(); touchInput[direction] = true; });
+        btn.addEventListener('mouseup', (e) => { e.preventDefault(); touchInput[direction] = false; });
+        btn.addEventListener('mouseleave', (e) => { touchInput[direction] = false; });
+    };
+
+    bindTouch('btn-up', 'up');
+    bindTouch('btn-down', 'down');
+    bindTouch('btn-left', 'left');
+    bindTouch('btn-right', 'right');
+
+    const actionBtn = document.getElementById('btn-action');
+    actionBtn.addEventListener('touchstart', (e) => { e.preventDefault(); handleAction(); });
+    actionBtn.addEventListener('mousedown', (e) => { e.preventDefault(); handleAction(); });
+
+
+    // --- ゲームロジック ---
+
+    // 距離を計算する便利関数
+    function getDistance(x1, y1, x2, y2) {
+        return Math.hypot(x2 - x1, y2 - y1);
+    }
+
+    // アクション（スペースキーまたはボタン）時の処理
+    function handleAction() {
+        let actionTaken = false;
+
+        // 1. お店での売却判定
+        const distToShop = getDistance(player.x, player.y, shop.x, shop.y);
+        if (distToShop < shop.size / 2 + player.size) {
+            if (inventory > 0) {
+                const earned = inventory * 100; // 1個100ベル
+                bells += earned;
+                inventory = 0;
+                addFloatingText(`+${earned}ベル!`, player.x, player.y - 40, '#ffd700');
+                updateUI();
+            } else {
+                addFloatingText("売るものがないタヌ", shop.x, shop.y - 40, '#333');
+            }
+            actionTaken = true;
+            return; // お店を優先
+        }
+
+        // 2. アイテムを拾う判定
+        for (let i = droppedItems.length - 1; i >= 0; i--) {
+            const item = droppedItems[i];
+            const distToItem = getDistance(player.x, player.y, item.x, item.y);
+            
+            if (distToItem < 40) { // 拾える距離
+                if (inventory < MAX_INVENTORY) {
+                    inventory++;
+                    droppedItems.splice(i, 1); // アイテムを消す
+                    addFloatingText("🍎GET!", player.x, player.y - 30, '#ff4444');
+                    updateUI();
+                } else {
+                    addFloatingText("持ち物がいっぱい！", player.x, player.y - 30, '#ff0000');
+                }
+                actionTaken = true;
+                return; // 1回のアクションで1つ拾う
+            }
+        }
+
+        // 3. 木を揺らす判定
+        if (!actionTaken) {
+            for (let tree of trees) {
+                const distToTree = getDistance(player.x, player.y, tree.x, tree.y);
+                if (distToTree < tree.size / 2 + player.size) {
+                    if (tree.hasFruit) {
+                        // フルーツを落とす
+                        tree.hasFruit = false;
+                        tree.fruitRegenTimer = 600; // 約10秒で復活 (60fps * 10)
+                        
+                        // 木の周りにフルーツを配置
+                        droppedItems.push({
+                            x: tree.x + (Math.random() * 40 - 20),
+                            y: tree.y + 30,
+                            emoji: '🍎'
+                        });
+                        addFloatingText("バサッ！", tree.x, tree.y - 20, '#ffffff');
+                    } else {
+                        addFloatingText("カサカサ...", tree.x, tree.y - 20, '#ffffff');
+                    }
+                    actionTaken = true;
+                    return; // 1回のアクションで1本の木
+                }
+            }
+        }
+    }
+
+    // UIの更新
+    function updateUI() {
+        bellsDisplay.innerText = bells;
+        inventoryDisplay.innerText = inventory;
+        
+        if (inventory >= MAX_INVENTORY) {
+            inventoryDisplay.style.color = "red";
+        } else {
+            inventoryDisplay.style.color = "inherit";
+        }
+    }
+
+    // 浮き出るテキストの追加
+    function addFloatingText(text, x, y, color) {
+        floatingTexts.push({
+            text: text,
+            x: x,
+            y: y,
+            color: color,
+            life: 60, // 60フレーム表示
+            opacity: 1
+        });
+    }
+
+    // 更新処理 (毎フレーム)
+    function update() {
+        // --- プレイヤーの移動 ---
+        let dx = 0;
+        let dy = 0;
+
+        if (keys.ArrowUp || keys.w || touchInput.up) dy -= player.speed;
+        if (keys.ArrowDown || keys.s || touchInput.down) dy += player.speed;
+        if (keys.ArrowLeft || keys.a || touchInput.left) dx -= player.speed;
+        if (keys.ArrowRight || keys.d || touchInput.right) dx += player.speed;
+
+        // 斜め移動の速度調整
+        if (dx !== 0 && dy !== 0) {
+            const length = Math.hypot(dx, dy);
+            dx = (dx / length) * player.speed;
+            dy = (dy / length) * player.speed;
+        }
+
+        player.x += dx;
+        player.y += dy;
+
+        // 画面外に出ないように制限
+        player.x = Math.max(player.size / 2, Math.min(canvas.width - player.size / 2, player.x));
+        player.y = Math.max(player.size / 2, Math.min(canvas.height - player.size / 2, player.y));
+
+        // --- 木のフルーツ復活処理 ---
+        for (let tree of trees) {
+            if (!tree.hasFruit) {
+                if (tree.fruitRegenTimer > 0) {
+                    tree.fruitRegenTimer--;
+                } else {
+                    tree.hasFruit = true; // 復活
+                }
+            }
+        }
+
+        // --- 浮き出るテキストの更新 ---
+        for (let i = floatingTexts.length - 1; i >= 0; i--) {
+            const ft = floatingTexts[i];
+            ft.y -= 1; // 上に昇る
+            ft.life--;
+            ft.opacity = ft.life / 60;
+            if (ft.life <= 0) {
+                floatingTexts.splice(i, 1);
+            }
+        }
+    }
+
+    // 描画処理 (毎フレーム)
+    function draw() {
+        // 背景クリア（草の模様を描く）
+        ctx.fillStyle = '#7bc04b';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // 簡単な草の模様
+        ctx.fillStyle = '#6ab03b';
+        for(let i=0; i<50; i++) {
+            // 固定の場所に描画したいが、ここでは簡易的にMath.sinでそれっぽく
+            let gx = (i * 137) % canvas.width;
+            let gy = (i * 251) % canvas.height;
+            ctx.fillRect(gx, gy, 10, 4);
+        }
+
+        // 絵文字を描画するための共通設定
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        // お店を描画
+        // 建物の影
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.beginPath();
+        ctx.ellipse(shop.x, shop.y + 30, 50, 15, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // お店本体
+        ctx.font = `${shop.size}px sans-serif`;
+        ctx.fillText(shop.emoji, shop.x, shop.y);
+        // タヌキのマーク風
+        ctx.font = `30px sans-serif`;
+        ctx.fillText('🦝', shop.x - 40, shop.y + 20);
+
+        // 落ちているアイテムを描画
+        for (let item of droppedItems) {
+            // 影
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.beginPath();
+            ctx.ellipse(item.x, item.y + 10, 10, 4, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.font = `24px sans-serif`;
+            ctx.fillText(item.emoji, item.x, item.y);
+        }
+
+        // 木を描画 (Y座標でソートして奥のものを先に描くべきだが、今回はシンプルにそのまま描画)
+        for (let tree of trees) {
+            // 影
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.beginPath();
+            ctx.ellipse(tree.x, tree.y + 25, 25, 10, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 木本体
+            ctx.font = `${tree.size}px sans-serif`;
+            ctx.fillText('🌳', tree.x, tree.y);
+
+            // フルーツがなっている場合
+            if (tree.hasFruit) {
+                ctx.font = `20px sans-serif`;
+                ctx.fillText('🍎', tree.x - 15, tree.y - 10);
+                ctx.fillText('🍎', tree.x + 15, tree.y - 5);
+                ctx.fillText('🍎', tree.x, tree.y - 25);
+            }
+        }
+
+        // プレイヤーを描画
+        // 影
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.beginPath();
+        ctx.ellipse(player.x, player.y + 15, 15, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.font = `${player.size}px sans-serif`;
+        ctx.fillText(player.emoji, player.x, player.y);
+
+        // 浮き出るテキストを描画
+        for (let ft of floatingTexts) {
+            ctx.fillStyle = ft.color;
+            ctx.globalAlpha = ft.opacity;
+            ctx.font = "bold 20px sans-serif";
+            // 縁取り
+            ctx.strokeStyle = "white";
+            ctx.lineWidth = 3;
+            ctx.strokeText(ft.text, ft.x, ft.y);
+            ctx.fillText(ft.text, ft.x, ft.y);
+            ctx.globalAlpha = 1.0; // 戻す
+        }
+    }
+
+    // メインループ
+    function gameLoop() {
+        update();
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // ゲーム開始
+    initMap();
+    updateUI();
+    gameLoop();
+
+</script>
+</body>
+</html>
